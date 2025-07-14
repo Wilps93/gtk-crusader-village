@@ -67,4 +67,16 @@ gboolean
 gcv_map_save_to_aiv_file_finish (GAsyncResult *result,
                                  GError      **error);
 
+void
+gcv_map_new_from_aivjson_file_async(GFile *file,
+                                      GcvItemStore *store,
+                                      int io_priority,
+                                      GCancellable *cancellable,
+                                      GAsyncReadyCallback callback,
+                                      gpointer user_data);
+
+GcvMap *
+gcv_map_new_from_aivjson_file_finish(GAsyncResult *result,
+                                       GError **error);
+
 G_END_DECLS
