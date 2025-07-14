@@ -2,7 +2,7 @@
 # Builds on Windows using MSYS2, automatically detects DLL dependencies using ntldd,
 # packages artifacts, and uploads.
 
-name: Build Windows Release
+name: Build Windows Release (cursor/complete-repository-analysis-17f0)
 
 on:
   push:
@@ -59,6 +59,16 @@ jobs:
           mingw-w64-ucrt-x86_64-libimagequant
           mingw-w64-ucrt-x86_64-libraqm
           mingw-w64-ucrt-x86_64-libavif
+          python
+          python-pip
+
+    - name: Ensure submodules are initialized
+      run: git submodule update --init --recursive
+
+    - name: Install Python build dependencies for Sourcehold
+      run: |
+        pip install --upgrade pip
+        pip install build setuptools wheel
 
     # Step 3: Configure build
     - name: Configure build
@@ -289,5 +299,5 @@ jobs:
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:
-        name: gtk-crusader-village-windows-x64
+        name: gtk-crusader-village-windows-x64-cursor-complete-repository-analysis-17f0
         path: artifact
