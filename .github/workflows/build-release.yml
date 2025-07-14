@@ -65,10 +65,12 @@ jobs:
     - name: Ensure submodules are initialized
       run: git submodule update --init --recursive
 
-    - name: Install Python build dependencies for Sourcehold
-      run: |
-        pip install --upgrade pip
-        pip install build setuptools wheel
+	- name: Set up Python virtual environment for Sourcehold
+	  run: |
+		python -m venv venv
+		source venv/Scripts/activate
+		python -m pip install --upgrade pip
+		pip install build setuptools wheel
 
     # Step 3: Configure build
     - name: Configure build
