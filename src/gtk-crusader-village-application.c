@@ -356,14 +356,17 @@ load_dialog_finish_cb (GObject      *source_object,
   window = gtk_application_get_active_window (GTK_APPLICATION (self));
   file   = gtk_file_dialog_open_finish (GTK_FILE_DIALOG (source_object), res, &local_error);
 
-  if (file != NULL)
+	if (file != NULL)
     {
       g_autofree char *basename = g_file_get_basename(file);
-      if (basename && g_str_has_suffix(basename, ".aivjson")) {
-        // Directly load as aivjson
+      g_autofree char *basename_lower = basename ? g_ascii_strdown(basename, -1) : NULL;
+      g_message("Selected file: %s", basename);
+      if (basename_lower && g_str_has_suffix(basename_lower, ".aivjson")) {
+        g_message("Using .aivjson loader");
         gcv_map_new_from_aivjson_file_async(
             file, self->item_store, G_PRIORITY_DEFAULT, NULL, load_map_finish_cb, self);
       } else {
+        g_message("Using Sourcehold loader");
         g_autofree char *python_exe   = NULL;
         g_autofree char *package_path = NULL;
         python_exe   = get_python_install (self);
