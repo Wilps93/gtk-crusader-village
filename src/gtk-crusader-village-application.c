@@ -356,24 +356,32 @@ load_dialog_finish_cb (GObject      *source_object,
   window = gtk_application_get_active_window (GTK_APPLICATION (self));
   file   = gtk_file_dialog_open_finish (GTK_FILE_DIALOG (source_object), res, &local_error);
 
-  if (file != NULL)
+	if (file != NULL)
     {
-      g_autofree char *python_exe   = NULL;
-      g_autofree char *package_path = NULL;
-
-      python_exe   = get_python_install (self);
-      package_path = get_python_package_path (self);
-
-      if (python_exe != NULL)
-        gcv_map_new_from_aiv_file_async (
-            file, self->item_store, python_exe, package_path,
-            G_PRIORITY_DEFAULT, NULL, load_map_finish_cb, self);
-      else
-        gcv_dialog (
-            "Cannot Proceed",
-            "Sourcehold Python Installation Not Configured",
-            INSTALLATION_WARNING_TEXT,
-            FALSE, window, NULL);
+      g_autofree char *basename = g_file_get_basename(file);
+      g_autofree char *basename_lower = basename ? g_ascii_strdown(basename, -1) : NULL;
+      g_message("Selected file: %s", basename);
+      if (basename_lower && g_str_has_suffix(basename_lower, ".aivjson")) {
+        g_message("Using .aivjson loader");
+        gcv_map_new_from_aivjson_file_async(
+            file, self->item_store, G_PRIORITY_DEFAULT, NULL, load_map_finish_cb, self);
+      } else {
+        g_message("Using Sourcehold loader");
+        g_autofree char *python_exe   = NULL;
+        g_autofree char *package_path = NULL;
+        python_exe   = get_python_install (self);
+        package_path = get_python_package_path (self);
+        if (python_exe != NULL)
+          gcv_map_new_from_aiv_file_async (
+              file, self->item_store, python_exe, package_path,
+              G_PRIORITY_DEFAULT, NULL, load_map_finish_cb, self);
+        else
+          gcv_dialog (
+              "Cannot Proceed",
+              "Sourcehold Python Installation Not Configured",
+              INSTALLATION_WARNING_TEXT,
+              FALSE, window, NULL);
+      }
     }
   else
     {
@@ -408,31 +416,19 @@ gcv_application_load (GSimpleAction *action,
   if (busy)
     return;
 
-  python_exe = get_python_install (self);
-  if (python_exe != NULL)
-    {
-      g_autoptr (GtkFileDialog) file_dialog = NULL;
-      g_autoptr (GtkFileFilter) filter      = NULL;
-
-      file_dialog = gtk_file_dialog_new ();
-      filter      = gtk_file_filter_new ();
-
-      gtk_file_filter_add_pattern (filter, "*.aiv");
-      gtk_file_dialog_set_default_filter (file_dialog, filter);
-
-      gtk_file_dialog_open (file_dialog, window, NULL, load_dialog_finish_cb, self);
-
-      g_object_set (
-          window,
-          "busy", TRUE,
-          NULL);
-    }
-  else
-    gcv_dialog (
-        "Import Error",
-        "Sourcehold Python Installation Not Configured",
-        INSTALLATION_WARNING_TEXT,
-        TRUE, window, NULL);
+  // Allow both .aiv and .aivjson
+  g_autoptr (GtkFileDialog) file_dialog = NULL;
+  g_autoptr (GtkFileFilter) filter      = NULL;
+  file_dialog = gtk_file_dialog_new ();
+  filter      = gtk_file_filter_new ();
+  gtk_file_filter_add_pattern (filter, "*.aiv");
+  gtk_file_filter_add_pattern (filter, "*.aivjson");
+  gtk_file_dialog_set_default_filter (file_dialog, filter);
+  gtk_file_dialog_open (file_dialog, window, NULL, load_dialog_finish_cb, self);
+  g_object_set (
+      window,
+      "busy", TRUE,
+      NULL);
 }
 
 static void

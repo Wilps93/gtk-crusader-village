@@ -778,3 +778,163 @@ return_sourcehold_error (GTask        *task,
         "with the following full output: \n\n%s",
         sourcehold_output);
 }
+
+// --- .aivjson direct loader ---
+
+typedef struct {
+    GcvItemStore *store;
+} AivjsonLoadData;
+
+static void
+destroy_aivjson_load_data(gpointer data) {
+    AivjsonLoadData *self = data;
+    g_clear_object(&self->store);
+    g_free(self);
+}
+
+static void
+new_from_aivjson_file_async_thread(GTask *task,
+                                   gpointer object,
+                                   gpointer task_data,
+                                   GCancellable *cancellable) {
+    GFile *file = object;
+    AivjsonLoadData *data = task_data;
+    g_autoptr(GcvMap) map = NULL;
+    g_autoptr(GError) local_error = NULL;
+    g_autoptr(GFileInputStream) stream = NULL;
+    g_autoptr(JsonParser) parser = NULL;
+    gboolean parse_result = FALSE;
+    JsonNode *root = NULL;
+    g_autoptr(GVariant) variant = NULL;
+    g_autoptr(GVariantIter) frames_iter = NULL;
+    g_autoptr(GVariantIter) misc_iter = NULL;
+    gint64 pause_delay_amount = 0;
+
+    if (g_task_return_error_if_cancelled(task))
+        return;
+
+    map = g_object_new(GCV_TYPE_MAP, NULL);
+    map->name = g_file_get_basename(file);
+
+    stream = g_file_read(file, cancellable, &local_error);
+    if (stream == NULL)
+        goto err;
+
+    parser = json_parser_new_immutable();
+    parse_result = json_parser_load_from_stream(parser, G_INPUT_STREAM(stream), cancellable, &local_error);
+    if (!parse_result)
+        goto err;
+
+    root = json_parser_get_root(parser);
+    variant = json_gvariant_deserialize(root, NULL, &local_error);
+    if (variant == NULL)
+        goto err;
+    variant = g_variant_ref_sink(variant);
+
+    if (!g_variant_lookup(variant, "pauseDelayAmount", "x", &pause_delay_amount))
+        goto err_inval;
+    if (!g_variant_lookup(variant, "frames", "av", &frames_iter))
+        goto err_inval;
+    g_variant_lookup(variant, "miscItems", "av", &misc_iter); // optional
+
+    // Reuse the same mapping logic as .aiv loader
+    for (;;) {
+        g_autoptr(GVariant) frame = NULL;
+        gint64 id = 0;
+        g_autoptr(GcvItem) item = NULL;
+        int item_tile_width = 0;
+        int item_tile_height = 0;
+        int item_tile_offset_x = 0;
+        int item_tile_offset_y = 0;
+        g_autoptr(GVariantIter) instances_iter = NULL;
+        g_autoptr(GcvItemStroke) stroke = NULL;
+
+        if (!g_variant_iter_next(frames_iter, "v", &frame))
+            break;
+        if (!g_variant_is_of_type(frame, G_VARIANT_TYPE_DICTIONARY))
+            goto err_inval;
+
+        if (!g_variant_lookup(frame, "itemType", "x", &id))
+            goto err_inval;
+        item = gcv_item_store_query_id(data->store, id);
+        if (item == NULL)
+            continue;
+        g_object_get(item, "tile-width", &item_tile_width, "tile-height", &item_tile_height, "tile-offset-x", &item_tile_offset_x, "tile-offset-y", &item_tile_offset_y, NULL);
+
+        if (!g_variant_lookup(frame, "tilePositionOfsets", "av", &instances_iter))
+            goto err_inval;
+
+        stroke = g_object_new(GCV_TYPE_ITEM_STROKE, "item", item, NULL);
+        for (;;) {
+            g_autoptr(GVariant) tile_variant = NULL;
+            gint64 tile = 0;
+            if (!g_variant_iter_next(instances_iter, "v", &tile_variant))
+                break;
+            if (!g_variant_is_of_type(tile_variant, G_VARIANT_TYPE_INT64))
+                goto err_inval;
+            tile = g_variant_get_int64(tile_variant);
+            gcv_item_stroke_add_instance(stroke, (GcvItemStrokeInstance){tile % 100, tile / 100});
+        }
+        g_list_store_append(G_LIST_STORE(map->strokes), stroke);
+    }
+
+    if (misc_iter) {
+        for (;;) {
+            g_autoptr(GVariant) unit = NULL;
+            gint64 id = 0;
+            g_autoptr(GcvItem) item = NULL;
+            gint64 tile = 0;
+            g_autoptr(GcvItemStroke) stroke = NULL;
+            if (!g_variant_iter_next(misc_iter, "v", &unit))
+                break;
+            if (!g_variant_is_of_type(unit, G_VARIANT_TYPE_DICTIONARY))
+                goto err_inval;
+            if (!g_variant_lookup(unit, "itemType", "x", &id))
+                goto err_inval;
+            item = gcv_item_store_query_id(data->store, id);
+            if (item == NULL)
+                continue;
+            if (!g_variant_lookup(unit, "positionOfset", "x", &tile))
+                goto err_inval;
+            stroke = g_object_new(GCV_TYPE_ITEM_STROKE, "item", item, NULL);
+            gcv_item_stroke_add_instance(stroke, (GcvItemStrokeInstance){tile % 100, tile / 100});
+            g_list_store_append(G_LIST_STORE(map->strokes), stroke);
+        }
+    }
+
+    g_task_return_pointer(task, g_steal_pointer(&map), g_object_unref);
+    return;
+err:
+    g_task_return_error(task, g_steal_pointer(&local_error));
+    return;
+err_inval:
+    g_task_return_new_error_literal(task, GCV_MAP_ERROR, GCV_MAP_ERROR_INVALID_JSON_STRUCTURE, "JSON structure is invalid");
+    return;
+}
+
+void
+gcv_map_new_from_aivjson_file_async(GFile *file,
+                                      GcvItemStore *store,
+                                      int io_priority,
+                                      GCancellable *cancellable,
+                                      GAsyncReadyCallback callback,
+                                      gpointer user_data) {
+    g_autoptr(GTask) task = NULL;
+    AivjsonLoadData *data = NULL;
+    g_return_if_fail(G_IS_FILE(file));
+    g_return_if_fail(GCV_IS_ITEM_STORE(store));
+    data = g_new0(typeof(*data), 1);
+    data->store = gcv_item_store_dup(store);
+    task = g_task_new(file, cancellable, callback, user_data);
+    g_task_set_source_tag(task, gcv_map_new_from_aivjson_file_async);
+    g_task_set_task_data(task, data, destroy_aivjson_load_data);
+    g_task_set_priority(task, io_priority);
+    g_task_set_check_cancellable(task, TRUE);
+    g_task_run_in_thread(task, new_from_aivjson_file_async_thread);
+}
+
+GcvMap *
+gcv_map_new_from_aivjson_file_finish(GAsyncResult *result, GError **error) {
+    g_return_val_if_fail(g_task_get_source_tag(G_TASK(result)) == gcv_map_new_from_aivjson_file_async, NULL);
+    return g_task_propagate_pointer(G_TASK(result), error);
+}
